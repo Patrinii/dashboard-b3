@@ -1,69 +1,80 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from modelo import carregar_dados, preparar_dados, treinar_modelo, simular_retorno, avaliar_modelo
 
-st.set_page_config(page_title="Dashboard B3", layout="wide")
+from modelo import instalar_e_coletar, criar_target, separar_dados, treinar_modelo, avaliar_modelo, simular_retorno
 
-# Sidebar
-st.sidebar.title("Configurações")
-ano_treino = st.sidebar.selectbox("Ano de Treinamento:", [2023, 2024, "2023 e 2024"])
-exibir_graficos = st.sidebar.multiselect("Gráficos", ["Fechamento", "Distribuição de Alvo", "Lucro Acumulado", "Volume x Preço"])
+# Título
+st.set_page_config(layout="wide")
+st.title("Dashboard de Previsão de Ações - PETR4.SA")
 
-# Dados
-dados = carregar_dados()
-dados = dados.dropna()
-dados = preparar_dados(dados)
+# Filtro por ano
+st.sidebar.header("Filtros")
+ano_inicio = st.sidebar.selectbox("Ano de Início", [2023, 2024])
+ano_fim = st.sidebar.selectbox("Ano de Fim", [2023, 2024, 2025])
+if ano_fim < ano_inicio:
+    st.sidebar.warning("O ano final deve ser maior ou igual ao ano inicial.")
 
-# Separar Treino/Teste
-if ano_treino == "2023 e 2024":
-    treino = dados[dados['Ano'].isin([2023, 2024])]
-else:
-    treino = dados[dados['Ano'] == ano_treino]
+# Baixar e preparar dados
+with st.spinner("Carregando dados..."):
+    dados = instalar_e_coletar()
+    dados = dados[f"{ano_inicio}-01-01":f"{ano_fim}-12-31"]
+    dados = criar_target(dados)
 
-teste = dados[dados['Ano'] == 2025]
+# Exibir amostra
+st.subheader("📄 Amostra dos Dados")
+st.dataframe(dados.tail(), use_container_width=True)
 
-# Modelo
-modelo, X_teste, y_teste, teste_completo = treinar_modelo(treino, teste)
-y_pred = avaliar_modelo(modelo, X_teste, y_teste)
-teste_completo = simular_retorno(teste_completo, y_pred)
+# Separar dados
+X_treino, X_teste, y_treino, y_teste = separar_dados(dados)
 
-# Dashboard
-st.title("📈 Painel de Análise - PETR4.SA")
+# Treinar modelo
+modelo, scaler, X_teste_scaled = treinar_modelo(X_treino, y_treino, X_teste)
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric("Acurácia", f"{modelo.score(X_teste, y_teste)*100:.2f}%")
-with col2:
-    st.metric("Retorno Total", f"R$ {teste_completo['Lucro'].sum():.2f}")
-with col3:
-    st.metric("Operações com Lucro", f"{(teste_completo['Lucro'] > 0).sum()}")
+# Avaliar
+resultados = avaliar_modelo(modelo, X_teste_scaled, y_teste)
 
-# Gráficos
-if "Fechamento" in exibir_graficos:
-    st.subheader("Gráfico de Fechamento")
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(dados['Date'], dados['Close'])
-    st.pyplot(fig)
+# Exibir métricas
+st.subheader("Métricas do Modelo")
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Acurácia", f"{resultados['acuracia']:.2f}")
+col2.metric("Precisão", f"{resultados['precisao']:.2f}")
+col3.metric("Recall", f"{resultados['recall']:.2f}")
+col4.metric("F1-Score", f"{resultados['f1_score']:.2f}")
+col5.metric("Especificidade", f"{resultados['especificidade']:.2f}")
 
-if "Distribuição de Alvo" in exibir_graficos:
-    st.subheader("Distribuição da Variável Alvo")
-    fig, ax = plt.subplots()
-    sns.countplot(x='Target', data=dados, ax=ax)
-    st.pyplot(fig)
+# Exibir matriz de confusão
+st.subheader("Matriz de Confusão")
+fig, ax = plt.subplots()
+sns.heatmap(resultados["matriz"], annot=True, fmt='d', cmap='Blues', ax=ax)
+ax.set_xlabel("Previsto")
+ax.set_ylabel("Real")
+st.pyplot(fig)
 
-if "Lucro Acumulado" in exibir_graficos:
-    st.subheader("Lucro Acumulado")
-    dados_plot = teste_completo.copy()
-    dados_plot['Lucro_Acumulado'] = dados_plot['Lucro'].cumsum()
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(dados_plot['Date'], dados_plot['Lucro_Acumulado'], color='green')
-    st.pyplot(fig)
+# Simular retorno
+df_simulado = simular_retorno(dados.iloc[-len(resultados["y_pred"]):], resultados["y_pred"])
 
-if "Volume x Preço" in exibir_graficos:
-    st.subheader("Dispersão Volume x Preço")
-    fig, ax = plt.subplots()
-    ax.scatter(dados['Volume'], dados['Close'], alpha=0.5)
-    st.pyplot(fig)
+# Exibir resultados financeiros
+st.subheader("Simulação de Retorno com Base na Estratégia")
+retorno_total = df_simulado["Ganho"].sum()
+retorno_medio = df_simulado["Ganho"].mean()
+total_ganhos = df_simulado[df_simulado["Ganho"] > 0]["Ganho"].sum()
+total_perdas = df_simulado[df_simulado["Ganho"] < 0]["Ganho"].sum()
+
+st.markdown(f"""
+- **Retorno total simulado:** R$ {retorno_total:.2f}  
+- **Retorno médio por operação:** R$ {retorno_medio:.2f}  
+- **Total de ganhos:** R$ {total_ganhos:.2f}  
+- **Total de perdas:** R$ {total_perdas:.2f}  
+- **Retorno final (ganhos - perdas):** R$ {retorno_total:.2f}
+""")
+
+# Gráfico de fechamento
+st.subheader("Gráfico de Fechamento")
+fig2, ax2 = plt.subplots()
+ax2.plot(dados.index, dados["Close"])
+ax2.set_title("Preço de Fechamento - PETR4.SA")
+ax2.set_xlabel("Data")
+ax2.set_ylabel("Preço (R$)")
+st.pyplot(fig2)
